@@ -4,7 +4,7 @@ import { test } from "node:test";
 import ExcelJS from "exceljs";
 
 import { DEFAULT_SETTINGS } from "./config.ts";
-import { readRow, upsertRow } from "./tracking-sheet.ts";
+import { listEntries, readRow, upsertRow } from "./tracking-sheet.ts";
 import { toArrayBuffer } from "./xlsx-buffer.ts";
 
 const MAPPING = DEFAULT_SETTINGS.trackingSheetMapping;
@@ -18,6 +18,7 @@ async function buildTrackingSheet(): Promise<ArrayBuffer> {
   }
   ws.getCell(`${MAPPING.columns.versionNo}2`).value = 1;
   ws.getCell(`${MAPPING.columns.updateSummary}2`).value = "首次提供文件";
+  ws.getCell(`${MAPPING.columns.sourceFileName}2`).value = "G6-需求文件0707.xlsx";
   for (const col of Object.values(MAPPING.columns)) {
     ws.getCell(`${col}2`).font = { italic: true };
   }
@@ -77,4 +78,28 @@ test("read row returns existing values", async () => {
   const original = await buildTrackingSheet();
   const row = await readRow(ExcelJS, original, MAPPING, 1);
   assert.equal(row?.updateSummary, "首次提供文件");
+});
+
+test("listEntries returns version + source filename for every row", async () => {
+  const original = await buildTrackingSheet();
+  const withV2 = await upsertRow(ExcelJS, original, MAPPING, 2, {
+    versionNo: 2,
+    sourceFileName: "G6-需求文件0714.xlsx",
+  });
+
+  const entries = await listEntries(ExcelJS, withV2, MAPPING);
+  assert.deepEqual(entries, [
+    { versionNo: 1, sourceFileName: "G6-需求文件0707.xlsx" },
+    { versionNo: 2, sourceFileName: "G6-需求文件0714.xlsx" },
+  ]);
+});
+
+test("listEntries returns an empty list when the tracking sheet has no data rows yet", async () => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(MAPPING.sheetName);
+  for (const col of Object.values(MAPPING.columns)) ws.getCell(`${col}1`).value = "header";
+  const bytes = toArrayBuffer(await wb.xlsx.writeBuffer());
+
+  const entries = await listEntries(ExcelJS, bytes, MAPPING);
+  assert.deepEqual(entries, []);
 });

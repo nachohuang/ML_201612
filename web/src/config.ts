@@ -1,10 +1,15 @@
 /** Mirrors config.py's ExcelMapping/TrackingSheetConfig — but since the browser tool
  * (Path B: upload/download, no client config file) exposes these as a settings form
  * instead of a YAML file, this module also owns default values + localStorage
- * persistence so the user only has to fill the form in once per browser/device. */
+ * persistence so the user only has to configure each sheet once per browser/device.
+ *
+ * Real customer workbooks have multiple tabs with genuinely different column layouts
+ * (not just the same layout repeated), so the mapping is keyed per sheet name rather
+ * than being a single flat mapping applied to "the" sheet.
+ */
 
-export interface ExcelMapping {
-  sheetName: string; // "auto" or an exact sheet name
+export interface SheetMapping {
+  sheetName: string;
   headerRow: number;
   keyColumns: string[];
   zhColumns: string[];
@@ -15,6 +20,7 @@ export interface TrackingColumns {
   versionNo: string;
   receivedDate: string;
   sender: string;
+  sourceFileName: string;
   emailPath: string;
   bilingualFilePath: string;
   diffReportPath: string;
@@ -37,18 +43,13 @@ export interface TrackingSheetMapping {
 }
 
 export interface Settings {
-  excelMapping: ExcelMapping;
+  /** Keyed by worksheet name — each tab is configured independently. */
+  sheetMappings: Record<string, SheetMapping>;
   trackingSheetMapping: TrackingSheetMapping;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
-  excelMapping: {
-    sheetName: "auto",
-    headerRow: 1,
-    keyColumns: ["A"],
-    zhColumns: ["C"],
-    enColumns: ["D"],
-  },
+  sheetMappings: {},
   trackingSheetMapping: {
     sheetName: "追蹤",
     headerRow: 1,
@@ -56,6 +57,7 @@ export const DEFAULT_SETTINGS: Settings = {
       versionNo: "A",
       receivedDate: "B",
       sender: "C",
+      sourceFileName: "Q",
       emailPath: "D",
       bilingualFilePath: "E",
       diffReportPath: "F",
@@ -73,7 +75,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
 };
 
-const STORAGE_KEY = "docUpdateTool.settings.v1";
+const STORAGE_KEY = "docUpdateTool.settings.v2";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
@@ -83,7 +85,16 @@ export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return clone(DEFAULT_SETTINGS);
-    return { ...clone(DEFAULT_SETTINGS), ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    return {
+      ...clone(DEFAULT_SETTINGS),
+      ...parsed,
+      trackingSheetMapping: {
+        ...clone(DEFAULT_SETTINGS.trackingSheetMapping),
+        ...parsed.trackingSheetMapping,
+        columns: { ...clone(DEFAULT_SETTINGS.trackingSheetMapping.columns), ...parsed.trackingSheetMapping?.columns },
+      },
+    };
   } catch {
     return clone(DEFAULT_SETTINGS);
   }
@@ -91,4 +102,10 @@ export function loadSettings(): Settings {
 
 export function saveSettings(settings: Settings): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+}
+
+export function saveSheetMapping(settings: Settings, mapping: SheetMapping): Settings {
+  const updated: Settings = { ...settings, sheetMappings: { ...settings.sheetMappings, [mapping.sheetName]: mapping } };
+  saveSettings(updated);
+  return updated;
 }

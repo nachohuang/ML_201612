@@ -67,6 +67,35 @@ export async function readRow(
   return result;
 }
 
+export interface TrackingEntry {
+  versionNo: number;
+  sourceFileName: string;
+}
+
+/** Lists (versionNo, sourceFileName) for every existing row, used to match a newly
+ * uploaded file against tracking history by filename (see plan Context: customer
+ * filenames often change slightly between versions, e.g. a date suffix, so this is a
+ * hint for the user to confirm/pick from rather than something to silently trust). */
+export async function listEntries(
+  ExcelJS: typeof ExcelJSNS,
+  bytes: ArrayBuffer,
+  mapping: TrackingSheetMapping
+): Promise<TrackingEntry[]> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(bytes);
+  const ws = wb.getWorksheet(mapping.sheetName);
+  if (!ws) return [];
+
+  const entries: TrackingEntry[] = [];
+  for (let row = mapping.headerRow + 1; row <= ws.rowCount; row++) {
+    const versionValue = ws.getCell(`${mapping.columns.versionNo}${row}`).value;
+    if (versionValue == null || String(versionValue).trim() === "") continue;
+    const sourceFileName = String(ws.getCell(`${mapping.columns.sourceFileName}${row}`).value ?? "");
+    entries.push({ versionNo: Number(versionValue), sourceFileName });
+  }
+  return entries;
+}
+
 function findRowByVersion(ws: ExcelJSNS.Worksheet, versionCol: string, headerRow: number, versionNo: number): number | null {
   for (let row = headerRow + 1; row <= ws.rowCount; row++) {
     const value = ws.getCell(`${versionCol}${row}`).value;

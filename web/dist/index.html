@@ -5,9 +5,10 @@
 <title>客戶需求文件比對／翻譯／歸檔工具</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font-family: -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
   h1 { font-size: 1.4rem; }
   h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #8884; padding-bottom: 0.3rem; }
+  h3 { font-size: 1rem; margin: 1rem 0 0.3rem; }
   fieldset { border: 1px solid #8884; border-radius: 6px; margin-bottom: 1rem; }
   label { display: inline-block; margin: 0.3rem 0.6rem 0.3rem 0; }
   input[type="text"], input[type="number"], input[type="date"], select { padding: 0.2rem 0.4rem; }
@@ -20,65 +21,70 @@
   .translation-input { width: 100%; box-sizing: border-box; }
   #status { margin-top: 1rem; padding: 0.6rem; border-radius: 6px; background: #8882; white-space: pre-line; }
   #status.error { background: #f005; }
-  #resultsSection, #diffSection { margin-top: 1rem; }
+  #resultsSection, #diffSection, #sheetMappingSection, #versionMatchSection { margin-top: 1rem; }
   .hint { font-size: 0.85rem; opacity: 0.75; }
+  .drop-zone { border: 2px dashed #8886; border-radius: 8px; padding: 0.8rem; margin: 0.3rem 0; transition: background 0.15s, border-color 0.15s; }
+  .drop-zone.drag-over { background: #8882; border-color: #4a90d9; }
+  .sheet-mapping-card { border: 1px solid #8884; border-radius: 6px; padding: 0.6rem 1rem; margin-bottom: 1rem; overflow-x: auto; }
+  .sheet-mapping-card table { min-width: max-content; }
+  #versionMatchSection { border: 1px solid #d9a04a; border-radius: 6px; padding: 0.8rem; background: #d9a04a1a; }
 </style>
 </head>
 <body>
 <h1>客戶需求文件比對／翻譯／歸檔工具</h1>
-<p class="hint">流程：上傳新版文件（+ 可選的前一版雙語檔／追蹤表／信件）→ 分析差異 → 填寫英文翻譯 → 產生歸檔 zip 下載。</p>
-
-<details>
-  <summary>設定（欄位對應，會自動記住在這台電腦這個瀏覽器裡）</summary>
-  <fieldset>
-    <legend>Excel 欄位對應</legend>
-    <div class="field-row">
-      <label>工作表名稱（auto = 第一個工作表）<input type="text" id="excelSheetName" value="auto" /></label>
-      <label>表頭列號<input type="number" id="excelHeaderRow" value="1" min="1" style="width:4em" /></label>
-    </div>
-    <div class="field-row">
-      <label>唯一鍵欄位（逗號分隔，例如 A）<input type="text" id="excelKeyColumns" /></label>
-    </div>
-    <div class="field-row">
-      <label>中文欄位（逗號分隔，例如 C）<input type="text" id="excelZhColumns" /></label>
-      <label>英文欄位（逗號分隔，例如 D，需與中文欄位一一對應）<input type="text" id="excelEnColumns" /></label>
-    </div>
-  </fieldset>
-  <fieldset>
-    <legend>追蹤表欄位對應</legend>
-    <div class="field-row">
-      <label>工作表名稱<input type="text" id="trackingSheetName" /></label>
-      <label>表頭列號<input type="number" id="trackingHeaderRow" value="1" min="1" style="width:4em" /></label>
-    </div>
-    <div id="trackingColumnGrid"></div>
-  </fieldset>
-  <button id="saveSettingsBtn">儲存設定</button>
-</details>
+<p class="hint">流程：拖拉或選擇新版文件（+ 可選的前一版雙語檔／追蹤表／.eml 信件）→ 設定欄位對應 → 分析差異 → 填寫英文翻譯 → 產生歸檔 zip 下載。</p>
 
 <h2>步驟 1：提供文件</h2>
-<div class="field-row"><label>新版文件（必填）<input type="file" id="newDocFile" accept=".xlsx" /></label></div>
-<div class="field-row"><label>前一版雙語檔（沒有就代表這是首次文件）<input type="file" id="prevDocFile" accept=".xlsx" /></label></div>
-<div class="field-row"><label>版本編號<input type="number" id="versionNo" min="1" style="width:5em" /></label></div>
+
+<div class="drop-zone" id="newDocDropZone">
+  <label>新版文件（必填，可拖拉檔案到這裡）<input type="file" id="newDocFile" accept=".xlsx" /></label>
+</div>
+<div class="drop-zone" id="prevDocDropZone">
+  <label>前一版雙語檔（沒有就代表這是首次文件）<input type="file" id="prevDocFile" accept=".xlsx" /></label>
+</div>
+<div class="drop-zone" id="emlDropZone">
+  <label>客戶原始信件 .eml（可選，會自動解析寄件者/日期）<input type="file" id="emlFile" accept=".eml" /></label>
+</div>
+<div class="drop-zone" id="trackingDropZone">
+  <label>既有追蹤表.xlsx（可選，提供的話會用檔名比對並自動更新一列）<input type="file" id="trackingFile" accept=".xlsx" /></label>
+</div>
+
+<div id="versionMatchSection" hidden>
+  <p id="versionMatchInfo"></p>
+  <div class="field-row">
+    <label>對應到既有文件<select id="matchExistingSelect"></select></label>
+  </div>
+  <div class="field-row">
+    <label><input type="checkbox" id="confirmNewFileCheckbox" /> 確定這是全新的文件（沒有前一版）</label>
+  </div>
+</div>
+
 <div class="field-row">
+  <label>版本編號<input type="number" id="versionNo" min="1" style="width:5em" /></label>
   <label>寄件窗口<input type="text" id="sender" /></label>
   <label>收到日期<input type="date" id="receivedDate" /></label>
 </div>
-<div class="field-row"><label>客戶原始信件 .msg（可選，僅原樣存證，不會被解析）<input type="file" id="msgFile" accept=".msg" /></label></div>
-<div class="field-row"><label>既有追蹤表.xlsx（可選，提供的話會自動更新一列）<input type="file" id="trackingFile" accept=".xlsx" /></label></div>
+
+<div id="sheetMappingSection" hidden>
+  <h2>步驟 2：頁籤欄位設定</h2>
+  <p class="hint">每個頁籤（工作表）結構可能不同，請分別點選每欄的用途；設定會依頁籤名稱自動記住，下次上傳同樣頁籤不用重填。</p>
+  <div id="sheetMappingContainer"></div>
+</div>
+
 <button id="analyzeBtn">分析文件</button>
 
 <div id="resultsSection" hidden>
   <div id="diffSection" hidden>
-    <h2>差異報告（新舊對照）</h2>
+    <h2>差異報告（新舊對照，涵蓋所有已設定頁籤）</h2>
     <table>
       <thead><tr><th>位置</th><th>欄位名稱</th><th>舊內容</th><th>新內容</th><th>變動類型</th></tr></thead>
       <tbody id="diffTableBody"></tbody>
     </table>
   </div>
 
-  <h2>步驟 2：填寫英文翻譯</h2>
+  <h2>步驟 3：填寫英文翻譯</h2>
   <table>
-    <thead><tr><th>欄位名稱</th><th>中文原文</th><th>英文翻譯</th></tr></thead>
+    <thead><tr><th>頁籤</th><th>欄位名稱</th><th>中文原文</th><th>英文翻譯</th></tr></thead>
     <tbody id="translationTableBody"></tbody>
   </table>
   <p class="hint">修改項目已預先帶入舊翻譯供你參考修改；新增項目請自行填寫。</p>
@@ -98,6 +104,18 @@
 <button id="confirmBtn">更新追蹤表</button>
 
 <div id="status"></div>
+
+<details style="margin-top: 2rem;">
+  <summary>追蹤表欄位對應設定（進階，通常只需設定一次）</summary>
+  <fieldset>
+    <div class="field-row">
+      <label>工作表名稱<input type="text" id="trackingSheetName" /></label>
+      <label>表頭列號<input type="number" id="trackingHeaderRow" value="1" min="1" style="width:4em" /></label>
+    </div>
+    <div id="trackingColumnGrid"></div>
+  </fieldset>
+  <button id="saveSettingsBtn">儲存設定</button>
+</details>
 
 <script src="libs/exceljs.min.js"></script>
 <script src="libs/jszip.min.js"></script>

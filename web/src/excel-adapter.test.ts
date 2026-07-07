@@ -3,8 +3,8 @@ import { test } from "node:test";
 
 import ExcelJS from "exceljs";
 
-import type { ExcelMapping } from "./config.ts";
-import { ExcelAdapter, inspectExcel } from "./excel-adapter.ts";
+import type { SheetMapping } from "./config.ts";
+import { ExcelAdapter, inspectWorkbook } from "./excel-adapter.ts";
 import type { SegmentUpdate } from "./models.ts";
 import { toArrayBuffer } from "./xlsx-buffer.ts";
 
@@ -42,8 +42,16 @@ async function buildWorkbook(opts: BuildOpts = {}): Promise<ArrayBuffer> {
   return toArrayBuffer(await wb.xlsx.writeBuffer());
 }
 
-function mapping(overrides: Partial<ExcelMapping> = {}): ExcelMapping {
-  return { sheetName: "auto", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"], ...overrides };
+function mapping(overrides: Partial<SheetMapping> = {}): Record<string, SheetMapping> {
+  const m: SheetMapping = {
+    sheetName: "Sheet1",
+    headerRow: 1,
+    keyColumns: ["A"],
+    zhColumns: ["C"],
+    enColumns: ["D"],
+    ...overrides,
+  };
+  return { [m.sheetName]: m };
 }
 
 test("extract segments — adjacent columns", async () => {
@@ -120,14 +128,62 @@ test("extract segments skips fully blank rows", async () => {
   assert.equal(segments.length, 1);
 });
 
-test("inspect flags formula columns", async () => {
+test("multiple sheets with entirely different layouts are all extracted", async () => {
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Sheet1");
-  ws.getCell("A1").value = "計算欄";
-  ws.getCell("A2").value = { formula: "1+1" };
+  const reqWs = wb.addWorksheet("需求列表");
+  reqWs.getCell("A1").value = "編號";
+  reqWs.getCell("C1").value = "需求說明";
+  reqWs.getCell("D1").value = "English";
+  reqWs.getCell("A2").value = 1;
+  reqWs.getCell("C2").value = "第一項需求";
+
+  const logWs = wb.addWorksheet("維護紀錄");
+  logWs.getCell("A1").value = "日期";
+  logWs.getCell("B1").value = "維護人員";
+  logWs.getCell("C1").value = "Maintainer (EN)";
+  logWs.getCell("A2").value = "2026-07-07";
+  logWs.getCell("B2").value = "陳宜筠";
+
   const bytes = toArrayBuffer(await wb.xlsx.writeBuffer());
 
-  const cols = await inspectExcel(ExcelJS, bytes);
-  const calcCol = cols.find((c) => c.header === "計算欄")!;
+  const sheetMappings: Record<string, SheetMapping> = {
+    需求列表: { sheetName: "需求列表", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"] },
+    維護紀錄: { sheetName: "維護紀錄", headerRow: 1, keyColumns: ["A"], zhColumns: ["B"], enColumns: ["C"] },
+  };
+  const adapter = new ExcelAdapter(ExcelJS, sheetMappings);
+  const segments = adapter.extractSegments(await adapter.load(bytes));
+
+  assert.equal(segments.length, 2);
+  assert.ok(segments.some((s) => s.locationId === "需求列表!C2" && s.zhText === "第一項需求"));
+  assert.ok(segments.some((s) => s.locationId === "維護紀錄!B2" && s.zhText === "陳宜筠"));
+});
+
+test("a configured sheet that doesn't exist in this workbook is skipped, not an error", async () => {
+  const bytes = await buildWorkbook();
+  const sheetMappings: Record<string, SheetMapping> = {
+    ...mapping(),
+    不存在的頁籤: { sheetName: "不存在的頁籤", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"] },
+  };
+  const adapter = new ExcelAdapter(ExcelJS, sheetMappings);
+  const segments = adapter.extractSegments(await adapter.load(bytes));
+  assert.equal(segments.length, 2); // only Sheet1's segments, no error thrown
+});
+
+test("inspectWorkbook flags formula columns across all sheets", async () => {
+  const wb = new ExcelJS.Workbook();
+  const ws1 = wb.addWorksheet("Sheet1");
+  ws1.getCell("A1").value = "計算欄";
+  ws1.getCell("A2").value = { formula: "1+1" };
+  const ws2 = wb.addWorksheet("Sheet2");
+  ws2.getCell("A1").value = "純文字欄";
+  ws2.getCell("A2").value = "hello";
+  const bytes = toArrayBuffer(await wb.xlsx.writeBuffer());
+
+  const sheets = await inspectWorkbook(ExcelJS, bytes);
+  assert.equal(sheets.length, 2);
+  const sheet1 = sheets.find((s) => s.sheetName === "Sheet1")!;
+  const calcCol = sheet1.columns.find((c) => c.header === "計算欄")!;
   assert.equal(calcCol.hasFormula, true);
+  const sheet2 = sheets.find((s) => s.sheetName === "Sheet2")!;
+  assert.equal(sheet2.columns.find((c) => c.header === "純文字欄")!.hasFormula, false);
 });
