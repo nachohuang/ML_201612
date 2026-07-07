@@ -1,0 +1,45 @@
+# 範例客戶設定檔。真實客戶文件格式尚未提供，以下欄位/段落對應為佔位值，
+# 拿到真實文件後，用 `docmgr inspect-excel` / `docmgr inspect-word` 找出實際欄位/段落位置再修改。
+client:
+  id: customer_a
+
+  folders:
+    incoming: "../../data/customer_a/incoming"
+    archive: "../../data/customer_a/archive"
+    output: "../../data/customer_a/output"
+
+  tracking_sheet:
+    path: "../../data/customer_a/追蹤表.xlsx"
+    sheet_name: "追蹤"
+    header_row: 1
+    columns:
+      version_no: "A"
+      received_date: "B"
+      sender: "C"
+      email_path: "D"
+      bilingual_file_path: "E"
+      diff_report_path: "F"
+      update_summary: "G"
+      is_first_version: "H"
+      overseas_confirm_status: "I"
+      overseas_confirm_date: "J"
+      overseas_confirm_method: "K"
+      customer_confirm_status: "L"
+      customer_confirm_date: "M"
+      customer_confirm_method: "N"
+      status: "O"
+      notes: "P"
+
+  document_format: "excel"  # "excel" | "word"
+
+  excel_mapping:
+    sheet_name: "auto"
+    header_row: 1
+    key_columns: ["A"]
+    zh_columns: ["C"]
+    en_columns: ["D"]
+    on_delete: "mark"
+
+  word_mapping:
+    mode: "alternating_paragraphs"
+    split_delimiter: null
