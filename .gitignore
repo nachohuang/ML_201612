@@ -6,3 +6,4 @@ __pycache__/
 *.xlsx.bak
 data/
 .pytest_cache/
+web/node_modules/

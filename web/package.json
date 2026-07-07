@@ -1,0 +1,23 @@
+{
+  "name": "doc-update-tool-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/app.ts --bundle --format=iife --target=es2019 --external:exceljs --external:jszip --outfile=dist/js/app.bundle.js",
+    "build:min": "esbuild src/app.ts --bundle --format=iife --target=es2019 --minify --external:exceljs --external:jszip --outfile=dist/js/app.bundle.js",
+    "test": "node --experimental-strip-types --test src/*.test.ts",
+    "test:e2e": "node e2e/run.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "esbuild": "^0.24.0",
+    "playwright": "^1.61.1",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "exceljs": "4.4.0",
+    "jszip": "3.10.1"
+  }
+}

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>客戶需求文件比對／翻譯／歸檔工具</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #8884; padding-bottom: 0.3rem; }
+  fieldset { border: 1px solid #8884; border-radius: 6px; margin-bottom: 1rem; }
+  label { display: inline-block; margin: 0.3rem 0.6rem 0.3rem 0; }
+  input[type="text"], input[type="number"], input[type="date"], select { padding: 0.2rem 0.4rem; }
+  .field-row { margin: 0.5rem 0; }
+  .col-input { display: inline-flex; flex-direction: column; align-items: flex-start; font-size: 0.8rem; margin: 0.2rem; }
+  #trackingColumnGrid { display: flex; flex-wrap: wrap; }
+  button { padding: 0.4rem 1rem; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; margin-top: 0.5rem; }
+  th, td { border: 1px solid #8884; padding: 0.3rem 0.5rem; text-align: left; font-size: 0.9rem; }
+  .translation-input { width: 100%; box-sizing: border-box; }
+  #status { margin-top: 1rem; padding: 0.6rem; border-radius: 6px; background: #8882; white-space: pre-line; }
+  #status.error { background: #f005; }
+  #resultsSection, #diffSection { margin-top: 1rem; }
+  .hint { font-size: 0.85rem; opacity: 0.75; }
+</style>
+</head>
+<body>
+<h1>客戶需求文件比對／翻譯／歸檔工具</h1>
+<p class="hint">流程：上傳新版文件（+ 可選的前一版雙語檔／追蹤表／信件）→ 分析差異 → 填寫英文翻譯 → 產生歸檔 zip 下載。</p>
+
+<details>
+  <summary>設定（欄位對應，會自動記住在這台電腦這個瀏覽器裡）</summary>
+  <fieldset>
+    <legend>Excel 欄位對應</legend>
+    <div class="field-row">
+      <label>工作表名稱（auto = 第一個工作表）<input type="text" id="excelSheetName" value="auto" /></label>
+      <label>表頭列號<input type="number" id="excelHeaderRow" value="1" min="1" style="width:4em" /></label>
+    </div>
+    <div class="field-row">
+      <label>唯一鍵欄位（逗號分隔，例如 A）<input type="text" id="excelKeyColumns" /></label>
+    </div>
+    <div class="field-row">
+      <label>中文欄位（逗號分隔，例如 C）<input type="text" id="excelZhColumns" /></label>
+      <label>英文欄位（逗號分隔，例如 D，需與中文欄位一一對應）<input type="text" id="excelEnColumns" /></label>
+    </div>
+  </fieldset>
+  <fieldset>
+    <legend>追蹤表欄位對應</legend>
+    <div class="field-row">
+      <label>工作表名稱<input type="text" id="trackingSheetName" /></label>
+      <label>表頭列號<input type="number" id="trackingHeaderRow" value="1" min="1" style="width:4em" /></label>
+    </div>
+    <div id="trackingColumnGrid"></div>
+  </fieldset>
+  <button id="saveSettingsBtn">儲存設定</button>
+</details>
+
+<h2>步驟 1：提供文件</h2>
+<div class="field-row"><label>新版文件（必填）<input type="file" id="newDocFile" accept=".xlsx" /></label></div>
+<div class="field-row"><label>前一版雙語檔（沒有就代表這是首次文件）<input type="file" id="prevDocFile" accept=".xlsx" /></label></div>
+<div class="field-row"><label>版本編號<input type="number" id="versionNo" min="1" style="width:5em" /></label></div>
+<div class="field-row">
+  <label>寄件窗口<input type="text" id="sender" /></label>
+  <label>收到日期<input type="date" id="receivedDate" /></label>
+</div>
+<div class="field-row"><label>客戶原始信件 .msg（可選，僅原樣存證，不會被解析）<input type="file" id="msgFile" accept=".msg" /></label></div>
+<div class="field-row"><label>既有追蹤表.xlsx（可選，提供的話會自動更新一列）<input type="file" id="trackingFile" accept=".xlsx" /></label></div>
+<button id="analyzeBtn">分析文件</button>
+
+<div id="resultsSection" hidden>
+  <div id="diffSection" hidden>
+    <h2>差異報告（新舊對照）</h2>
+    <table>
+      <thead><tr><th>位置</th><th>欄位名稱</th><th>舊內容</th><th>新內容</th><th>變動類型</th></tr></thead>
+      <tbody id="diffTableBody"></tbody>
+    </table>
+  </div>
+
+  <h2>步驟 2：填寫英文翻譯</h2>
+  <table>
+    <thead><tr><th>欄位名稱</th><th>中文原文</th><th>英文翻譯</th></tr></thead>
+    <tbody id="translationTableBody"></tbody>
+  </table>
+  <p class="hint">修改項目已預先帶入舊翻譯供你參考修改；新增項目請自行填寫。</p>
+  <button id="generateBtn">產生歸檔並下載</button>
+</div>
+
+<h2>登記確認狀態（選用）</h2>
+<div class="field-row"><label>追蹤表.xlsx<input type="file" id="confirmTrackingFile" accept=".xlsx" /></label></div>
+<div class="field-row">
+  <label>版本編號<input type="number" id="confirmVersionNo" min="1" style="width:5em" /></label>
+  <label>確認方<select id="confirmParty"><option value="overseas">海外團隊</option><option value="customer">客戶</option></select></label>
+</div>
+<div class="field-row">
+  <label>確認日期<input type="date" id="confirmDate" /></label>
+  <label>確認方式<input type="text" id="confirmMethod" placeholder="回信／Teams／口頭後登記" /></label>
+</div>
+<button id="confirmBtn">更新追蹤表</button>
+
+<div id="status"></div>
+
+<script src="libs/exceljs.min.js"></script>
+<script src="libs/jszip.min.js"></script>
+<script src="js/app.bundle.js"></script>
+</body>
+</html>
