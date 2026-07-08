@@ -22,6 +22,22 @@ const INDEX_HTML = path.join(__dirname, "..", "dist", "index.html");
 
 const SHEET_REQ = "需求列表";
 const SHEET_LOG = "維護紀錄";
+const SHEET_SCREEN = "畫面截圖";
+const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+function wordParagraph(text) {
+  return `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
+}
+
+async function buildDocx(filePath, bodyXml) {
+  const documentXml =
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<w:document xmlns:w="${W_NS}"><w:body>${bodyXml}</w:body></w:document>`;
+  const zip = new JSZip();
+  zip.file("word/document.xml", documentXml);
+  const buf = await zip.generateAsync({ type: "nodebuffer" });
+  await writeFile(filePath, buf);
+}
 
 async function buildV1Doc(filePath) {
   const wb = new ExcelJS.Workbook();
@@ -40,6 +56,14 @@ async function buildV1Doc(filePath) {
   logWs.getCell("C1").value = "Maintainer (EN)";
   logWs.getCell("A2").value = "2026-07-01";
   logWs.getCell("B2").value = "陳宜筠";
+
+  // A free-form screen mockup tab — merged cells, no header row, no clean zh/en
+  // columns. Real requirement documents have far more of these than actual tables.
+  const screenWs = wb.addWorksheet(SHEET_SCREEN);
+  screenWs.getCell("A1").value = "查詢畫面";
+  screenWs.mergeCells("A1:C1");
+  screenWs.getCell("A2").value = "帳號";
+  screenWs.getCell("B2").value = "幣別";
 
   await wb.xlsx.writeFile(filePath);
 }
@@ -100,9 +124,9 @@ async function dropFileOnZone(page, zoneSelector, inputId, filePath, mimeType) {
 
 async function setSheetCardRoles(page, sheetName, roles) {
   const card = page.locator(`.sheet-mapping-card[data-sheet-name="${sheetName}"]`);
-  // Sheets default to collapsed/unchecked (real documents can have 20+ tabs, most of
-  // which aren't translatable tables) — must opt in before the column selects show.
-  await card.locator(".sheet-enable").check();
+  // Sheets are included by default now, but default to freeform (whole-cell) mode —
+  // must switch to table mode before the column-role selects are usable.
+  await card.locator(".sheet-mode").selectOption("table");
   for (const [col, role] of Object.entries(roles)) {
     await card.locator(`select[data-col="${col}"]`).selectOption(role);
   }
@@ -140,8 +164,13 @@ async function main() {
   await dropFileOnZone(page, "#newDocDropZone", "newDocFile", v1Path, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   await page.waitForSelector(".sheet-mapping-card");
   const cardNames = await page.$$eval(".sheet-mapping-card", (cards) => cards.map((c) => c.dataset.sheetName));
-  assert.deepEqual(new Set(cardNames), new Set([SHEET_REQ, SHEET_LOG]), "both worksheet tabs must get their own card");
+  assert.deepEqual(new Set(cardNames), new Set([SHEET_REQ, SHEET_LOG, SHEET_SCREEN]), "every worksheet tab must get its own card");
 
+  // Every sheet is included by default now — verify that instead of unchecking one.
+  for (const name of [SHEET_REQ, SHEET_LOG, SHEET_SCREEN]) {
+    assert.equal(await page.locator(`.sheet-mapping-card[data-sheet-name="${name}"] .sheet-enable`).isChecked(), true);
+  }
+  // SHEET_SCREEN is deliberately left in its default freeform mode (no column setup).
   await setSheetCardRoles(page, SHEET_REQ, { A: "key", C: "zh1", D: "en1" });
   await setSheetCardRoles(page, SHEET_LOG, { A: "key", B: "zh1", C: "en1" });
 
@@ -197,6 +226,7 @@ async function main() {
   v2Wb.getWorksheet(SHEET_REQ).getCell("C3").value = "第二項需求（已修改）";
   v2Wb.getWorksheet(SHEET_LOG).getCell("A3").value = "2026-07-14";
   v2Wb.getWorksheet(SHEET_LOG).getCell("B3").value = "王小明";
+  v2Wb.getWorksheet(SHEET_SCREEN).getCell("A2").value = "帳號（必填）"; // freeform cell edit
   const v2Path = path.join(tmp, "customer_v2_0714.xlsx"); // deliberately different filename
   await v2Wb.xlsx.writeFile(v2Path);
 
@@ -208,7 +238,7 @@ async function main() {
   await page.waitForFunction(
     (sheetName) => {
       const cards = document.querySelectorAll(".sheet-mapping-card");
-      return cards.length === 2 && Array.from(cards).some((c) => c.dataset.sheetName === sheetName);
+      return cards.length === 3 && Array.from(cards).some((c) => c.dataset.sheetName === sheetName);
     },
     SHEET_REQ
   );
@@ -234,12 +264,18 @@ async function main() {
   const diffRows = await page.$$eval("#diffTableBody tr", (rows) =>
     rows.map((r) => Array.from(r.children).map((c) => c.textContent))
   );
-  assert.equal(diffRows.length, 2, "expected exactly 2 diff rows across both sheets (modified + added)");
+  assert.equal(diffRows.length, 3, "table-mode modified+added, plus the freeform sheet's changed cell");
   assert.ok(diffRows.some((r) => r[0].startsWith(SHEET_REQ) && r[4] === "修改"));
   assert.ok(diffRows.some((r) => r[0].startsWith(SHEET_LOG) && r[4] === "新增"));
+  assert.ok(
+    diffRows.some((r) => r[0].startsWith(SHEET_SCREEN) && r[4] === "修改" && r[3] === "帳號（必填）"),
+    "the freeform sheet's cell edit must show up in the diff report"
+  );
 
+  // The freeform change must be visible in the diff report but must NOT demand a
+  // translation input — there's no English column for a whole-cell comparison.
   const v2Inputs = await page.$$("#translationTableBody input[data-change-id]");
-  assert.equal(v2Inputs.length, 2, "only the modified+added rows need translation");
+  assert.equal(v2Inputs.length, 2, "only the table-mode modified+added rows need translation, not the freeform cell");
   await v2Inputs[0].fill("Item two revised");
   await v2Inputs[1].fill("Xiaoming Wang");
 
@@ -256,6 +292,7 @@ async function main() {
   assert.equal(v2Bilingual.getWorksheet(SHEET_REQ).getCell("D2").value, "EN-0", "unchanged translation carried forward");
   assert.equal(v2Bilingual.getWorksheet(SHEET_REQ).getCell("D3").value, "Item two revised");
   assert.equal(v2Bilingual.getWorksheet(SHEET_LOG).getCell("C3").value, "Xiaoming Wang");
+  assert.equal(v2Bilingual.getWorksheet(SHEET_SCREEN).getCell("A2").value, "帳號（必填）", "freeform sheet passes through as-is");
 
   const v2TrackingBuf = await zipEntryBuffer(v2Zip, "tracking.xlsx");
   const v2Tracking = new ExcelJS.Workbook();
@@ -273,7 +310,91 @@ async function main() {
     console.log("ALL E2E CHECKS PASSED, no console errors");
   }
 
+  await runWordScenario(browser);
+
   await browser.close();
+}
+
+/** Word support's default mode (freeform: whole-document compare, no zh/en columns to
+ * configure) end to end — real requirement documents mix Chinese and English inline
+ * with no delimiter far more often than they cleanly separate the two languages. */
+async function runWordScenario(browser) {
+  const page = await browser.newPage();
+  const consoleErrors = [];
+  page.on("pageerror", (err) => consoleErrors.push(String(err)));
+  page.on("console", (msg) => {
+    if (msg.type() === "error") consoleErrors.push(msg.text());
+  });
+
+  await page.goto(`file://${INDEX_HTML}`);
+
+  const tmp = await mkdtemp(path.join(tmpdir(), "docmgr-e2e-word-"));
+  const v1Path = path.join(tmp, "requirement_v1.docx");
+  await buildDocx(
+    v1Path,
+    wordParagraph("計算Calculate (新增Create)") + wordParagraph("查詢List") + wordParagraph("確認Confirm")
+  );
+
+  await page.setInputFiles("#newDocFile", v1Path);
+  await page.waitForFunction(() => document.getElementById("wordMappingSection").hidden === false);
+  assert.equal(await page.isHidden("#sheetMappingSection"), true, "excel sheet UI must stay hidden for a docx upload");
+  assert.equal(await page.inputValue("#wordMode"), "freeform", "freeform must be the default mode");
+
+  await page.click("#analyzeBtn");
+  await page.waitForFunction(() => document.getElementById("status").textContent.includes("首次文件"));
+  assert.equal(await page.$$eval("#translationTableBody input", (els) => els.length), 0, "freeform mode has no translation slots");
+
+  const [v1Download] = await Promise.all([page.waitForEvent("download"), page.click("#generateBtn")]);
+  const v1ZipPath = path.join(tmp, "v1_output.zip");
+  await v1Download.saveAs(v1ZipPath);
+  const v1Zip = await JSZip.loadAsync(await readFile(v1ZipPath));
+  assert.ok(v1Zip.file("bilingual.docx"), "word output must be named bilingual.docx");
+  assert.ok(!v1Zip.file("diff_report.xlsx"), "first version has no diff report");
+
+  const v1BilingualBuf = Buffer.from(await v1Zip.file("bilingual.docx").async("nodebuffer"));
+  const v1BilingualPath = path.join(tmp, "v1_bilingual.docx");
+  await writeFile(v1BilingualPath, v1BilingualBuf);
+
+  // v2: first paragraph edited in place (unrelated to the insertion below), and a
+  // brand new paragraph inserted further down between two otherwise-unchanged ones —
+  // this is the actual regression shape: an insertion must not shift/disturb the
+  // unrelated modification or the unchanged paragraphs around it.
+  const v2Path = path.join(tmp, "requirement_v2.docx");
+  await buildDocx(
+    v2Path,
+    wordParagraph("計算Calculate（已修改）") +
+      wordParagraph("查詢List") +
+      wordParagraph("新增的段落New paragraph") +
+      wordParagraph("確認Confirm")
+  );
+
+  await page.setInputFiles("#newDocFile", []);
+  await page.setInputFiles("#newDocFile", v2Path);
+  await page.waitForFunction(() => document.getElementById("wordMappingSection").hidden === false);
+  await page.setInputFiles("#prevDocFile", v1BilingualPath);
+
+  await page.click("#analyzeBtn");
+  await page.waitForFunction(() => document.getElementById("status").textContent.includes("比對完成"));
+
+  const diffRows = await page.$$eval("#diffTableBody tr", (rows) => rows.map((r) => Array.from(r.children).map((c) => c.textContent)));
+  assert.equal(diffRows.length, 2, "one modified paragraph + one added paragraph, insertion must not shift the rest");
+  assert.ok(diffRows.some((r) => r[4] === "修改" && r[3].includes("已修改")));
+  assert.ok(diffRows.some((r) => r[4] === "新增" && r[3].includes("新增的段落")));
+  assert.equal(await page.$$eval("#translationTableBody input", (els) => els.length), 0, "freeform mode never needs translation input");
+
+  const [v2Download] = await Promise.all([page.waitForEvent("download"), page.click("#generateBtn")]);
+  const v2ZipPath = path.join(tmp, "v2_output.zip");
+  await v2Download.saveAs(v2ZipPath);
+  const v2Zip = await JSZip.loadAsync(await readFile(v2ZipPath));
+  assert.ok(v2Zip.file("diff_report.xlsx"), "v2 must have a diff report");
+
+  if (consoleErrors.length > 0) {
+    console.error("Word scenario console errors:", consoleErrors);
+    process.exitCode = 1;
+  } else {
+    console.log("Word freeform golden path OK (insertion correctly isolated, no translation slots)");
+  }
+  await page.close();
 }
 
 main().catch((err) => {

@@ -10,6 +10,11 @@
 
 export interface SheetMapping {
   sheetName: string;
+  /** "freeform" (default for newly-seen sheets): compare every cell, no columns to
+   * configure — for screen mockups/report layouts, which real requirement documents
+   * have far more of than actual zh/en tables. "table": the original column-role
+   * picker flow, for sheets that really are a list of rows with a translatable column. */
+  mode: "table" | "freeform";
   headerRow: number;
   keyColumns: string[];
   zhColumns: string[];
@@ -42,14 +47,33 @@ export interface TrackingSheetMapping {
   columns: TrackingColumns;
 }
 
+export interface WordMapping {
+  /** "freeform" (default): whole-document compare, no zh/en split configured — for
+   * documents that already mix Chinese and English inline with no clean delimiter
+   * (common in practice — see plan Context). The other three are the original
+   * structured layouts, for documents that really do separate the two languages. */
+  mode: "freeform" | "alternating_paragraphs" | "same_paragraph_split" | "table_based";
+  splitDelimiter: string | null;
+  /** table_based only: 0-based column indices as strings, e.g. ["0"]. */
+  zhColumns: string[];
+  enColumns: string[];
+}
+
 export interface Settings {
   /** Keyed by worksheet name — each tab is configured independently. */
   sheetMappings: Record<string, SheetMapping>;
   trackingSheetMapping: TrackingSheetMapping;
+  wordMapping: WordMapping;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   sheetMappings: {},
+  wordMapping: {
+    mode: "freeform",
+    splitDelimiter: null,
+    zhColumns: [],
+    enColumns: [],
+  },
   trackingSheetMapping: {
     sheetName: "追蹤",
     headerRow: 1,
@@ -94,6 +118,7 @@ export function loadSettings(): Settings {
         ...parsed.trackingSheetMapping,
         columns: { ...clone(DEFAULT_SETTINGS.trackingSheetMapping.columns), ...parsed.trackingSheetMapping?.columns },
       },
+      wordMapping: { ...clone(DEFAULT_SETTINGS.wordMapping), ...parsed.wordMapping },
     };
   } catch {
     return clone(DEFAULT_SETTINGS);

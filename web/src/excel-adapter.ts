@@ -17,6 +17,7 @@
 
 import type ExcelJSNS from "exceljs";
 
+import { cellText } from "./cell-text.ts";
 import type { SheetMapping } from "./config.ts";
 import type { Segment, SegmentUpdate } from "./models.ts";
 import { toArrayBuffer } from "./xlsx-buffer.ts";
@@ -45,24 +46,12 @@ export class ExcelAdapter {
   extractSegments(wb: ExcelJSNS.Workbook, referenceWb?: ExcelJSNS.Workbook): Segment[] {
     const segments: Segment[] = [];
     for (const mapping of Object.values(this.sheetMappings)) {
-      const ws = this.resolveSheet(wb, mapping, referenceWb);
+      if (mapping.mode !== "table") continue; // freeform sheets go through diffFreeformSheet instead
+      const ws = resolveWorksheet(wb, mapping.sheetName, referenceWb);
       if (!ws) continue; // this workbook doesn't have that tab (even by position) — skip rather than fail
       segments.push(...extractFromSheet(ws, mapping));
     }
     return segments;
-  }
-
-  private resolveSheet(
-    wb: ExcelJSNS.Workbook,
-    mapping: SheetMapping,
-    referenceWb?: ExcelJSNS.Workbook
-  ): ExcelJSNS.Worksheet | undefined {
-    const exact = wb.getWorksheet(mapping.sheetName);
-    if (exact) return exact;
-    if (!referenceWb) return undefined;
-    const refIndex = referenceWb.worksheets.findIndex((w) => w.name === mapping.sheetName);
-    if (refIndex === -1) return undefined;
-    return wb.worksheets[refIndex];
   }
 
   applyTranslations(wb: ExcelJSNS.Workbook, updates: SegmentUpdate[]): void {
@@ -80,6 +69,26 @@ export class ExcelAdapter {
     const buffer = await wb.xlsx.writeBuffer();
     return toArrayBuffer(buffer as ArrayBuffer | ArrayBufferView);
   }
+}
+
+/** `referenceWb` is only used as a fallback when `wb` doesn't have a sheet with this
+ * exact name — real customer workbooks sometimes rename tabs between versions (e.g.
+ * stripping an English suffix) while keeping the same tab order, so this falls back to
+ * matching by position within `referenceWb` (typically the newly uploaded document,
+ * since mappings/freeform sheet choices are made against its sheet names) rather than
+ * silently dropping the whole sheet from the diff. Exported so the freeform diff path
+ * in app.ts (which isn't driven by ExcelAdapter) can resolve sheets the same way. */
+export function resolveWorksheet(
+  wb: ExcelJSNS.Workbook,
+  sheetName: string,
+  referenceWb?: ExcelJSNS.Workbook
+): ExcelJSNS.Worksheet | undefined {
+  const exact = wb.getWorksheet(sheetName);
+  if (exact) return exact;
+  if (!referenceWb) return undefined;
+  const refIndex = referenceWb.worksheets.findIndex((w) => w.name === sheetName);
+  if (refIndex === -1) return undefined;
+  return wb.worksheets[refIndex];
 }
 
 function extractFromSheet(ws: ExcelJSNS.Worksheet, mapping: SheetMapping): Segment[] {
@@ -121,22 +130,6 @@ function extractFromSheet(ws: ExcelJSNS.Worksheet, mapping: SheetMapping): Segme
     }
   }
   return segments;
-}
-
-function cellText(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    // Rich-text cells (mixed fonts/colors within one cell, common in free-form
-    // requirement docs) come back as { richText: [{text, font}, ...] } rather than a
-    // plain string — concatenate the runs to get the cell's actual visible text.
-    if (Array.isArray(obj.richText)) {
-      return obj.richText.map((run) => String((run as { text?: unknown }).text ?? "")).join("");
-    }
-    if ("text" in obj) return String(obj.text ?? "");
-    if ("result" in obj) return String(obj.result ?? "");
-  }
-  return String(value);
 }
 
 /** ExcelJS's worksheet.rowCount can include trailing rows with only style/no value, so

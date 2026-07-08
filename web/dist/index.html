@@ -30,6 +30,7 @@
   .sheet-card-heading { display: block; font-weight: 600; cursor: pointer; }
   .sheet-card-heading input { margin-right: 0.4rem; }
   .sheet-card-detail { margin-top: 0.6rem; }
+  .sheet-table-detail { margin-top: 0.5rem; }
   #versionMatchSection { border: 1px solid #d9a04a; border-radius: 6px; padding: 0.8rem; background: #d9a04a1a; }
 </style>
 </head>
@@ -40,10 +41,10 @@
 <h2>步驟 1：提供文件</h2>
 
 <div class="drop-zone" id="newDocDropZone">
-  <label>新版文件（必填，可拖拉檔案到這裡）<input type="file" id="newDocFile" accept=".xlsx" /></label>
+  <label>新版文件（必填，可拖拉檔案到這裡，支援 .xlsx / .docx）<input type="file" id="newDocFile" accept=".xlsx,.docx" /></label>
 </div>
 <div class="drop-zone" id="prevDocDropZone">
-  <label>前一版雙語檔（沒有就代表這是首次文件）<input type="file" id="prevDocFile" accept=".xlsx" /></label>
+  <label>前一版雙語檔（沒有就代表這是首次文件）<input type="file" id="prevDocFile" accept=".xlsx,.docx" /></label>
 </div>
 <div class="drop-zone" id="emlDropZone">
   <label>客戶原始信件 .eml（可選，會自動解析寄件者/日期）<input type="file" id="emlFile" accept=".eml" /></label>
@@ -72,6 +73,28 @@
   <h2>步驟 2：頁籤欄位設定</h2>
   <p class="hint">每個頁籤（工作表）結構可能不同，請分別點選每欄的用途；設定會依頁籤名稱自動記住，下次上傳同樣頁籤不用重填。</p>
   <div id="sheetMappingContainer"></div>
+</div>
+
+<div id="wordMappingSection" hidden>
+  <h2>步驟 2：Word 文件比對設定</h2>
+  <div class="field-row">
+    <label>比對方式
+      <select id="wordMode">
+        <option value="freeform">自由格式（整篇比對，中英文已混在同段落/儲存格內，不需設定欄位）</option>
+        <option value="alternating_paragraphs">交替段落（一段中文緊接著一段對應英文）</option>
+        <option value="same_paragraph_split">同段落切分（同一段落用分隔符號隔開中英文）</option>
+        <option value="table_based">表格式（表格中有專門的中文欄／英文欄）</option>
+      </select>
+    </label>
+  </div>
+  <div id="wordSplitDelimiterRow" class="field-row" hidden>
+    <label>分隔符號<input type="text" id="wordSplitDelimiter" placeholder="例如 | 或 -" /></label>
+  </div>
+  <div id="wordTableColumnsRow" class="field-row" hidden>
+    <label>中文欄位（0為第一欄，逗號分隔）<input type="text" id="wordZhColumns" placeholder="例如 0" /></label>
+    <label>英文欄位<input type="text" id="wordEnColumns" placeholder="例如 1" /></label>
+  </div>
+  <p class="hint">大部分需求文件的中英文是混在同一段落/儲存格內，沒有清楚分開，這種情況請用「自由格式」。</p>
 </div>
 
 <button id="analyzeBtn">分析文件</button>

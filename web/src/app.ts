@@ -9,19 +9,25 @@ import type JSZipNS from "jszip";
 
 import { alignAndDiff } from "./align.ts";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "./config.ts";
-import type { Settings, SheetMapping, TrackingSheetMapping } from "./config.ts";
+import type { Settings, SheetMapping, TrackingSheetMapping, WordMapping } from "./config.ts";
 import { buildDiffReportWorkbook } from "./diff-report.ts";
 import { parseEmlFile } from "./eml-parser.ts";
-import { ExcelAdapter, inspectWorkbook } from "./excel-adapter.ts";
+import { ExcelAdapter, inspectWorkbook, resolveWorksheet } from "./excel-adapter.ts";
 import type { InspectSheet } from "./excel-adapter.ts";
+import { diffFreeformSheet } from "./freeform-diff.ts";
 import { ChangeType } from "./models.ts";
 import type { ChangeRecord, Segment, SegmentUpdate } from "./models.ts";
 import { listEntries, readRow, upsertRow } from "./tracking-sheet.ts";
+import { WordAdapter } from "./word-adapter.ts";
+import type { WordDoc } from "./word-adapter.ts";
+import { diffFreeformWordDocument } from "./word-freeform-diff.ts";
 import { buildZip } from "./zip-bundle.ts";
 import type { ZipEntry } from "./zip-bundle.ts";
 
 declare const ExcelJS: typeof ExcelJSNS;
 declare const JSZip: typeof JSZipNS;
+// DOMParser/XMLSerializer are native browser globals (unlike ExcelJS/JSZip, nothing to
+// load via a <script> tag) — lib.dom.d.ts already declares them for TypeScript.
 
 // ---- small DOM helpers ----------------------------------------------------
 
@@ -60,6 +66,17 @@ function escapeHtml(text: string): string {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
+}
+
+function getDocType(file: File): "excel" | "word" {
+  return file.name.toLowerCase().endsWith(".docx") ? "word" : "excel";
+}
+
+function splitColumns(value: string): string[] {
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 /** Wires a drop zone element so dragging a file onto it (or clicking it) populates the
@@ -144,6 +161,31 @@ function trackingColumnInputs(): HTMLInputElement[] {
   return Array.from($<HTMLDivElement>("trackingColumnGrid").querySelectorAll("input[data-tracking-col]"));
 }
 
+// ---- word document settings (mode select shown when the new document is .docx) ----
+
+function fillWordSettingsForm(mapping: WordMapping): void {
+  $<HTMLSelectElement>("wordMode").value = mapping.mode;
+  $<HTMLInputElement>("wordSplitDelimiter").value = mapping.splitDelimiter ?? "";
+  $<HTMLInputElement>("wordZhColumns").value = mapping.zhColumns.join(",");
+  $<HTMLInputElement>("wordEnColumns").value = mapping.enColumns.join(",");
+  updateWordModeVisibility();
+}
+
+function updateWordModeVisibility(): void {
+  const mode = $<HTMLSelectElement>("wordMode").value;
+  $<HTMLDivElement>("wordSplitDelimiterRow").hidden = mode !== "same_paragraph_split";
+  $<HTMLDivElement>("wordTableColumnsRow").hidden = mode !== "table_based";
+}
+
+function readWordSettingsForm(): WordMapping {
+  return {
+    mode: $<HTMLSelectElement>("wordMode").value as WordMapping["mode"],
+    splitDelimiter: $<HTMLInputElement>("wordSplitDelimiter").value || null,
+    zhColumns: splitColumns($<HTMLInputElement>("wordZhColumns").value),
+    enColumns: splitColumns($<HTMLInputElement>("wordEnColumns").value),
+  };
+}
+
 // ---- per-sheet column mapping (interactive, point-and-click) ----------------------
 
 const ROLE_OPTIONS: Array<[string, string]> = [
@@ -173,7 +215,11 @@ function renderSheetMappingCards(sheets: InspectSheet[], existing: Record<string
 
   for (const sheet of sheets) {
     const priorMapping = existing[sheet.sheetName];
-    const alreadyConfigured = (priorMapping?.zhColumns.length ?? 0) > 0;
+    // Every tab is included by default now (screen mockups/report layouts are
+    // meaningful requirement content too, not just zh/en tables — see plan Context),
+    // defaulting to freeform (whole-cell compare, nothing to configure) unless the
+    // user previously set this sheet up as a real zh/en table.
+    const mode: "table" | "freeform" = priorMapping?.mode === "table" ? "table" : "freeform";
 
     const card = document.createElement("div");
     card.className = "sheet-mapping-card";
@@ -184,19 +230,33 @@ function renderSheetMappingCards(sheets: InspectSheet[], existing: Record<string
     const enableCheckbox = document.createElement("input");
     enableCheckbox.type = "checkbox";
     enableCheckbox.className = "sheet-enable";
-    enableCheckbox.checked = alreadyConfigured;
+    enableCheckbox.checked = true;
     heading.appendChild(enableCheckbox);
-    heading.append(
-      ` 比對此頁籤：${sheet.sheetName}` +
-        ` （${sheet.columns.length} 欄 x 內容列數不定）`
-    );
+    heading.append(` 比對此頁籤：${sheet.sheetName} （${sheet.columns.length} 欄）`);
     card.appendChild(heading);
 
     const detail = document.createElement("div");
     detail.className = "sheet-card-detail";
-    detail.hidden = !alreadyConfigured;
     enableCheckbox.addEventListener("change", () => {
       detail.hidden = !enableCheckbox.checked;
+    });
+
+    const modeLabel = document.createElement("label");
+    modeLabel.textContent = "比對方式：";
+    const modeSelect = document.createElement("select");
+    modeSelect.className = "sheet-mode";
+    modeSelect.innerHTML =
+      '<option value="freeform">自由格式（整格比對，畫面/報表版面，不用設定欄位）</option>' +
+      '<option value="table">表格（設定中英文欄位，用於清單/列表類頁籤）</option>';
+    modeSelect.value = mode;
+    modeLabel.appendChild(modeSelect);
+    detail.appendChild(modeLabel);
+
+    const tableDetail = document.createElement("div");
+    tableDetail.className = "sheet-table-detail";
+    tableDetail.hidden = mode !== "table";
+    modeSelect.addEventListener("change", () => {
+      tableDetail.hidden = modeSelect.value !== "table";
     });
 
     const headerRowLabel = document.createElement("label");
@@ -208,7 +268,7 @@ function renderSheetMappingCards(sheets: InspectSheet[], existing: Record<string
     headerRowInput.className = "sheet-header-row";
     headerRowInput.style.width = "4em";
     headerRowLabel.appendChild(headerRowInput);
-    detail.appendChild(headerRowLabel);
+    tableDetail.appendChild(headerRowLabel);
 
     const table = document.createElement("table");
     const theadRow = document.createElement("tr");
@@ -245,7 +305,8 @@ function renderSheetMappingCards(sheets: InspectSheet[], existing: Record<string
     }
     table.appendChild(roleRow);
 
-    detail.appendChild(table);
+    tableDetail.appendChild(table);
+    detail.appendChild(tableDetail);
     card.appendChild(detail);
     container.appendChild(card);
   }
@@ -261,6 +322,13 @@ function collectSheetMappingsFromUI(): Record<string, SheetMapping> {
     if (!card.querySelector<HTMLInputElement>(".sheet-enable")!.checked) continue; // skipped sheet — not carried into the mapping at all
 
     const sheetName = card.dataset.sheetName as string;
+    const mode = card.querySelector<HTMLSelectElement>(".sheet-mode")!.value as "table" | "freeform";
+
+    if (mode === "freeform") {
+      result[sheetName] = { sheetName, mode, headerRow: 1, keyColumns: [], zhColumns: [], enColumns: [] };
+      continue;
+    }
+
     const headerRow = Number(card.querySelector<HTMLInputElement>(".sheet-header-row")!.value) || 1;
     const keyColumns: string[] = [];
     const pairs: Record<string, { zh?: string; en?: string }> = {};
@@ -283,7 +351,7 @@ function collectSheetMappingsFromUI(): Record<string, SheetMapping> {
       }
     }
 
-    result[sheetName] = { sheetName, headerRow, keyColumns, zhColumns, enColumns };
+    result[sheetName] = { sheetName, mode, headerRow, keyColumns, zhColumns, enColumns };
   }
   return result;
 }
@@ -292,10 +360,17 @@ async function handleNewDocSelected(): Promise<void> {
   const file = $<HTMLInputElement>("newDocFile").files?.[0];
   if (!file) return;
   try {
-    const bytes = await readFileAsArrayBuffer(file);
-    const sheets = await inspectWorkbook(ExcelJS, bytes);
-    const settings = loadSettings();
-    renderSheetMappingCards(sheets, settings.sheetMappings);
+    if (getDocType(file) === "word") {
+      $<HTMLDivElement>("sheetMappingContainer").innerHTML = "";
+      $<HTMLDivElement>("sheetMappingSection").hidden = true;
+      fillWordSettingsForm(loadSettings().wordMapping);
+      $<HTMLDivElement>("wordMappingSection").hidden = false;
+    } else {
+      $<HTMLDivElement>("wordMappingSection").hidden = true;
+      const bytes = await readFileAsArrayBuffer(file);
+      const sheets = await inspectWorkbook(ExcelJS, bytes);
+      renderSheetMappingCards(sheets, loadSettings().sheetMappings);
+    }
   } catch (err) {
     setStatus(`讀取文件失敗：${(err as Error).message}`, true);
   }
@@ -418,13 +493,16 @@ function wireVersionMatchControls(): void {
 
 // ---- application state ------------------------------------------------------
 
+type TranslationItems = Array<{ changeId: string; zhText: string; fieldName: string | null; oldEn?: string }>;
+
 interface AnalysisState {
-  sheetMappings: Record<string, SheetMapping>;
-  newDocBytes: ArrayBuffer;
-  newDocWorkbook: ExcelJSNS.Workbook;
+  docType: "excel" | "word";
+  bilingualFileName: string; // "bilingual.xlsx" or "bilingual.docx"
   isFirstVersion: boolean;
   records: ChangeRecord[]; // empty for v1
-  translationItems: Array<{ changeId: string; zhText: string; fieldName: string | null; oldEn?: string }>;
+  translationItems: TranslationItems;
+  excel?: { sheetMappings: Record<string, SheetMapping>; workbook: ExcelJSNS.Workbook };
+  word?: { mapping: WordMapping; doc: WordDoc };
 }
 
 let state: AnalysisState | null = null;
@@ -444,59 +522,139 @@ async function handleAnalyze(): Promise<void> {
       throw new Error("追蹤表找不到這個檔名，請先在上面選擇對應的既有文件，或勾選「確定是新的檔名」");
     }
 
-    const sheetMappings = collectSheetMappingsFromUI();
-    if (Object.values(sheetMappings).every((m) => m.zhColumns.length === 0)) {
-      throw new Error("請至少為一個頁籤設定「中文」欄位");
+    if (getDocType(newDocFile) === "word") {
+      await analyzeWord(newDocFile, prevDocFile);
+    } else {
+      await analyzeExcel(newDocFile, prevDocFile);
     }
-    saveSettings({ ...loadSettings(), sheetMappings });
+  } catch (err) {
+    setStatus(`發生錯誤：${(err as Error).message}`, true);
+  }
+}
 
-    const adapter = new ExcelAdapter(ExcelJS, sheetMappings);
-    const newDocBytes = await readFileAsArrayBuffer(newDocFile);
-    const newDocWorkbook = await adapter.load(newDocBytes);
-    const newSegments = adapter.extractSegments(newDocWorkbook);
+function buildTranslationItems(records: ChangeRecord[]): TranslationItems {
+  return records
+    .filter((r) => (r.changeType === ChangeType.ADDED || r.changeType === ChangeType.MODIFIED) && r.newEnLocationId)
+    .map((r) => ({
+      changeId: r.newEnLocationId as string,
+      zhText: r.newZh ?? "",
+      fieldName: r.fieldName,
+      // MODIFIED rows are pre-filled with the old translation as a starting point
+      // to revise, mirroring how a human translator would work from the prior text
+      oldEn: r.changeType === ChangeType.MODIFIED ? r.oldEn : undefined,
+    }));
+}
 
-    let records: ChangeRecord[] = [];
-    let translationItems: AnalysisState["translationItems"];
-    const isFirstVersion = !prevDocFile;
+function finishAnalyze(isFirstVersion: boolean, records: ChangeRecord[], translationItems: TranslationItems): void {
+  renderDiffTable(records);
+  renderTranslationTable(translationItems);
+  if (resolvedVersionNo === null) {
+    $<HTMLInputElement>("versionNo").value = isFirstVersion ? "1" : $<HTMLInputElement>("versionNo").value || "";
+  }
+  $<HTMLDivElement>("resultsSection").hidden = false;
+  setStatus(
+    isFirstVersion
+      ? `首次文件，無前版可比對，共 ${translationItems.length} 筆需要翻譯。`
+      : `比對完成，共 ${translationItems.length} 筆新增/修改需要翻譯（可往下看完整差異報告）。`
+  );
+}
 
+async function analyzeExcel(newDocFile: File, prevDocFile: File | undefined): Promise<void> {
+  const sheetMappings = collectSheetMappingsFromUI();
+  if (Object.keys(sheetMappings).length === 0) {
+    throw new Error("請至少勾選一個頁籤進行比對");
+  }
+  saveSettings({ ...loadSettings(), sheetMappings });
+
+  const freeformMappings = Object.values(sheetMappings).filter((m) => m.mode === "freeform");
+
+  const adapter = new ExcelAdapter(ExcelJS, sheetMappings);
+  const newDocBytes = await readFileAsArrayBuffer(newDocFile);
+  const newDocWorkbook = await adapter.load(newDocBytes);
+  const newSegments = adapter.extractSegments(newDocWorkbook);
+
+  let records: ChangeRecord[] = [];
+  let translationItems: TranslationItems;
+  const isFirstVersion = !prevDocFile;
+
+  if (isFirstVersion) {
+    // Freeform sheets have nothing to diff against on the very first version either
+    // (same rule as table sheets: no diff report at all for v1) — they're simply
+    // archived as-is once translations are applied and the file is saved.
+    translationItems = newSegments
+      .filter((s) => s.zhText.trim() !== "")
+      .map((s) => ({ changeId: s.enLocationId, zhText: s.zhText, fieldName: s.fieldName }));
+  } else {
+    const prevBytes = await readFileAsArrayBuffer(prevDocFile);
+    const prevWorkbook = await adapter.load(prevBytes);
+    const prevSegments: Segment[] = adapter.extractSegments(prevWorkbook, newDocWorkbook);
+    records = alignAndDiff(prevSegments, newSegments);
+
+    for (const mapping of freeformMappings) {
+      const newWs = resolveWorksheet(newDocWorkbook, mapping.sheetName);
+      if (!newWs) continue;
+      const oldWs = resolveWorksheet(prevWorkbook, mapping.sheetName, newDocWorkbook);
+      records.push(...diffFreeformSheet(oldWs, newWs));
+    }
+
+    translationItems = buildTranslationItems(records);
+  }
+
+  state = {
+    docType: "excel",
+    bilingualFileName: "bilingual.xlsx",
+    isFirstVersion,
+    records,
+    translationItems,
+    excel: { sheetMappings, workbook: newDocWorkbook },
+  };
+  finishAnalyze(isFirstVersion, records, translationItems);
+}
+
+async function analyzeWord(newDocFile: File, prevDocFile: File | undefined): Promise<void> {
+  const mapping = readWordSettingsForm();
+  saveSettings({ ...loadSettings(), wordMapping: mapping });
+
+  const adapter = new WordAdapter(JSZip, DOMParser, XMLSerializer, mapping);
+  const newDocBytes = await readFileAsArrayBuffer(newDocFile);
+  const newDoc = await adapter.load(newDocBytes);
+  const isFirstVersion = !prevDocFile;
+
+  let records: ChangeRecord[] = [];
+  let translationItems: TranslationItems = [];
+
+  if (mapping.mode === "freeform") {
+    // No zh/en split configured, so there's nothing to put in the translation table —
+    // same as freeform Excel sheets, this only ever feeds the diff report.
+    if (!isFirstVersion) {
+      const prevBytes = await readFileAsArrayBuffer(prevDocFile);
+      const prevDoc = await adapter.load(prevBytes);
+      records = diffFreeformWordDocument(prevDoc.dom, newDoc.dom);
+    }
+  } else {
+    const newSegments = adapter.extractSegments(newDoc);
     if (isFirstVersion) {
       translationItems = newSegments
         .filter((s) => s.zhText.trim() !== "")
         .map((s) => ({ changeId: s.enLocationId, zhText: s.zhText, fieldName: s.fieldName }));
     } else {
       const prevBytes = await readFileAsArrayBuffer(prevDocFile);
-      const prevWorkbook = await adapter.load(prevBytes);
-      const prevSegments: Segment[] = adapter.extractSegments(prevWorkbook, newDocWorkbook);
+      const prevDoc = await adapter.load(prevBytes);
+      const prevSegments = adapter.extractSegments(prevDoc);
       records = alignAndDiff(prevSegments, newSegments);
-      translationItems = records
-        .filter((r) => (r.changeType === ChangeType.ADDED || r.changeType === ChangeType.MODIFIED) && r.newEnLocationId)
-        .map((r) => ({
-          changeId: r.newEnLocationId as string,
-          zhText: r.newZh ?? "",
-          fieldName: r.fieldName,
-          // MODIFIED rows are pre-filled with the old translation as a starting point
-          // to revise, mirroring how a human translator would work from the prior text
-          oldEn: r.changeType === ChangeType.MODIFIED ? r.oldEn : undefined,
-        }));
+      translationItems = buildTranslationItems(records);
     }
-
-    state = { sheetMappings, newDocBytes, newDocWorkbook, isFirstVersion, records, translationItems };
-
-    renderDiffTable(records);
-    renderTranslationTable(translationItems);
-    if (resolvedVersionNo === null) {
-      $<HTMLInputElement>("versionNo").value = isFirstVersion ? "1" : $<HTMLInputElement>("versionNo").value || "";
-    }
-
-    $<HTMLDivElement>("resultsSection").hidden = false;
-    setStatus(
-      isFirstVersion
-        ? `首次文件，無前版可比對，共 ${translationItems.length} 筆需要翻譯。`
-        : `比對完成，共 ${translationItems.length} 筆新增/修改需要翻譯（可往下看每個頁籤的完整差異報告）。`
-    );
-  } catch (err) {
-    setStatus(`發生錯誤：${(err as Error).message}`, true);
   }
+
+  state = {
+    docType: "word",
+    bilingualFileName: "bilingual.docx",
+    isFirstVersion,
+    records,
+    translationItems,
+    word: { mapping, doc: newDoc },
+  };
+  finishAnalyze(isFirstVersion, records, translationItems);
 }
 
 function renderDiffTable(records: ChangeRecord[]): void {
@@ -557,16 +715,25 @@ async function handleGenerate(): Promise<void> {
       enText: i.value.trim(),
     }));
 
-    const adapter = new ExcelAdapter(ExcelJS, state.sheetMappings);
-    adapter.applyTranslations(state.newDocWorkbook, updates);
-    const bilingualBytes = await adapter.save(state.newDocWorkbook);
+    let bilingualBytes: ArrayBuffer;
+    if (state.docType === "excel" && state.excel) {
+      const adapter = new ExcelAdapter(ExcelJS, state.excel.sheetMappings);
+      adapter.applyTranslations(state.excel.workbook, updates);
+      bilingualBytes = await adapter.save(state.excel.workbook);
+    } else if (state.docType === "word" && state.word) {
+      const adapter = new WordAdapter(JSZip, DOMParser, XMLSerializer, state.word.mapping);
+      adapter.applyTranslations(state.word.doc, updates);
+      bilingualBytes = await adapter.save(state.word.doc);
+    } else {
+      throw new Error("內部錯誤：找不到已分析的文件狀態");
+    }
 
     const versionNo = Number($<HTMLInputElement>("versionNo").value);
     if (!versionNo || versionNo < 1) throw new Error("請輸入正確的版本編號");
 
     const newDocFile = $<HTMLInputElement>("newDocFile").files?.[0];
     const dateStamp = todayCompact();
-    const entries: ZipEntry[] = [{ name: "bilingual.xlsx", bytes: bilingualBytes }];
+    const entries: ZipEntry[] = [{ name: state.bilingualFileName, bytes: bilingualBytes }];
 
     if (!state.isFirstVersion) {
       const diffBytes = await buildDiffReportWorkbook(ExcelJS, state.records);
@@ -586,7 +753,7 @@ async function handleGenerate(): Promise<void> {
         sender: $<HTMLInputElement>("sender").value,
         sourceFileName: newDocFile?.name ?? "",
         emailPath: emlFile?.name ?? "",
-        bilingualFilePath: `v${String(versionNo).padStart(2, "0")}_${dateStamp}/bilingual.xlsx`,
+        bilingualFilePath: `v${String(versionNo).padStart(2, "0")}_${dateStamp}/${state.bilingualFileName}`,
         diffReportPath: state.isFirstVersion ? "" : `v${String(versionNo).padStart(2, "0")}_${dateStamp}/diff_report.xlsx`,
         updateSummary: state.isFirstVersion ? "首次提供文件" : "",
         isFirstVersion: state.isFirstVersion ? "是" : "否",
@@ -675,6 +842,7 @@ function init(): void {
   $<HTMLInputElement>("newDocFile").addEventListener("change", () => void handleNewDocSelected());
   $<HTMLInputElement>("trackingFile").addEventListener("change", () => void checkVersionMatch());
   $<HTMLInputElement>("emlFile").addEventListener("change", () => void handleEmlSelected());
+  $<HTMLSelectElement>("wordMode").addEventListener("change", updateWordModeVisibility);
   wireVersionMatchControls();
 
   $<HTMLButtonElement>("analyzeBtn").addEventListener("click", () => void handleAnalyze());

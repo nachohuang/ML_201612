@@ -45,6 +45,7 @@ async function buildWorkbook(opts: BuildOpts = {}): Promise<ArrayBuffer> {
 function mapping(overrides: Partial<SheetMapping> = {}): Record<string, SheetMapping> {
   const m: SheetMapping = {
     sheetName: "Sheet1",
+    mode: "table",
     headerRow: 1,
     keyColumns: ["A"],
     zhColumns: ["C"],
@@ -147,8 +148,8 @@ test("multiple sheets with entirely different layouts are all extracted", async 
   const bytes = toArrayBuffer(await wb.xlsx.writeBuffer());
 
   const sheetMappings: Record<string, SheetMapping> = {
-    需求列表: { sheetName: "需求列表", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"] },
-    維護紀錄: { sheetName: "維護紀錄", headerRow: 1, keyColumns: ["A"], zhColumns: ["B"], enColumns: ["C"] },
+    需求列表: { sheetName: "需求列表", mode: "table", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"] },
+    維護紀錄: { sheetName: "維護紀錄", mode: "table", headerRow: 1, keyColumns: ["A"], zhColumns: ["B"], enColumns: ["C"] },
   };
   const adapter = new ExcelAdapter(ExcelJS, sheetMappings);
   const segments = adapter.extractSegments(await adapter.load(bytes));
@@ -183,7 +184,7 @@ test("a renamed sheet in the reference workbook is still found by tab position",
   const oldBytes = toArrayBuffer(await oldWb.xlsx.writeBuffer());
 
   const sheetMappings: Record<string, SheetMapping> = {
-    需求列表: { sheetName: "需求列表", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"] },
+    需求列表: { sheetName: "需求列表", mode: "table", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"] },
   };
   const adapter = new ExcelAdapter(ExcelJS, sheetMappings);
 
@@ -221,7 +222,7 @@ test("a configured sheet that doesn't exist in this workbook is skipped, not an 
   const bytes = await buildWorkbook();
   const sheetMappings: Record<string, SheetMapping> = {
     ...mapping(),
-    不存在的頁籤: { sheetName: "不存在的頁籤", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"] },
+    不存在的頁籤: { sheetName: "不存在的頁籤", mode: "table", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"] },
   };
   const adapter = new ExcelAdapter(ExcelJS, sheetMappings);
   const segments = adapter.extractSegments(await adapter.load(bytes));
