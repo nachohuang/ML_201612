@@ -172,24 +172,43 @@ function renderSheetMappingCards(sheets: InspectSheet[], existing: Record<string
   container.innerHTML = "";
 
   for (const sheet of sheets) {
+    const priorMapping = existing[sheet.sheetName];
+    const alreadyConfigured = (priorMapping?.zhColumns.length ?? 0) > 0;
+
     const card = document.createElement("div");
     card.className = "sheet-mapping-card";
     card.dataset.sheetName = sheet.sheetName;
 
-    const heading = document.createElement("h3");
-    heading.textContent = `頁籤：${sheet.sheetName}`;
+    const heading = document.createElement("label");
+    heading.className = "sheet-card-heading";
+    const enableCheckbox = document.createElement("input");
+    enableCheckbox.type = "checkbox";
+    enableCheckbox.className = "sheet-enable";
+    enableCheckbox.checked = alreadyConfigured;
+    heading.appendChild(enableCheckbox);
+    heading.append(
+      ` 比對此頁籤：${sheet.sheetName}` +
+        ` （${sheet.columns.length} 欄 x 內容列數不定）`
+    );
     card.appendChild(heading);
+
+    const detail = document.createElement("div");
+    detail.className = "sheet-card-detail";
+    detail.hidden = !alreadyConfigured;
+    enableCheckbox.addEventListener("change", () => {
+      detail.hidden = !enableCheckbox.checked;
+    });
 
     const headerRowLabel = document.createElement("label");
     headerRowLabel.textContent = "表頭列號：";
     const headerRowInput = document.createElement("input");
     headerRowInput.type = "number";
     headerRowInput.min = "1";
-    headerRowInput.value = String(existing[sheet.sheetName]?.headerRow ?? 1);
+    headerRowInput.value = String(priorMapping?.headerRow ?? 1);
     headerRowInput.className = "sheet-header-row";
     headerRowInput.style.width = "4em";
     headerRowLabel.appendChild(headerRowInput);
-    card.appendChild(headerRowLabel);
+    detail.appendChild(headerRowLabel);
 
     const table = document.createElement("table");
     const theadRow = document.createElement("tr");
@@ -220,13 +239,14 @@ function renderSheetMappingCards(sheets: InspectSheet[], existing: Record<string
         opt.textContent = label;
         select.appendChild(opt);
       }
-      select.value = roleForColumn(col.column, existing[sheet.sheetName]);
+      select.value = roleForColumn(col.column, priorMapping);
       td.appendChild(select);
       roleRow.appendChild(td);
     }
     table.appendChild(roleRow);
 
-    card.appendChild(table);
+    detail.appendChild(table);
+    card.appendChild(detail);
     container.appendChild(card);
   }
 
@@ -238,6 +258,8 @@ function collectSheetMappingsFromUI(): Record<string, SheetMapping> {
   const result: Record<string, SheetMapping> = {};
 
   for (const card of cards) {
+    if (!card.querySelector<HTMLInputElement>(".sheet-enable")!.checked) continue; // skipped sheet — not carried into the mapping at all
+
     const sheetName = card.dataset.sheetName as string;
     const headerRow = Number(card.querySelector<HTMLInputElement>(".sheet-header-row")!.value) || 1;
     const keyColumns: string[] = [];
@@ -444,7 +466,7 @@ async function handleAnalyze(): Promise<void> {
     } else {
       const prevBytes = await readFileAsArrayBuffer(prevDocFile);
       const prevWorkbook = await adapter.load(prevBytes);
-      const prevSegments: Segment[] = adapter.extractSegments(prevWorkbook);
+      const prevSegments: Segment[] = adapter.extractSegments(prevWorkbook, newDocWorkbook);
       records = alignAndDiff(prevSegments, newSegments);
       translationItems = records
         .filter((r) => (r.changeType === ChangeType.ADDED || r.changeType === ChangeType.MODIFIED) && r.newEnLocationId)

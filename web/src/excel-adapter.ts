@@ -36,14 +36,33 @@ export class ExcelAdapter {
     return wb;
   }
 
-  extractSegments(wb: ExcelJSNS.Workbook): Segment[] {
+  /** `referenceWb` is only used as a fallback when `wb` doesn't have a sheet with the
+   * mapping's exact name — real customer workbooks sometimes rename tabs between
+   * versions (e.g. stripping an English suffix) while keeping the same tab order, so
+   * this falls back to matching by position within `referenceWb` (typically the newly
+   * uploaded document, since mappings are configured against its sheet names) rather
+   * than silently dropping the whole sheet from the diff. */
+  extractSegments(wb: ExcelJSNS.Workbook, referenceWb?: ExcelJSNS.Workbook): Segment[] {
     const segments: Segment[] = [];
     for (const mapping of Object.values(this.sheetMappings)) {
-      const ws = wb.getWorksheet(mapping.sheetName);
-      if (!ws) continue; // this workbook doesn't have that tab — skip rather than fail
+      const ws = this.resolveSheet(wb, mapping, referenceWb);
+      if (!ws) continue; // this workbook doesn't have that tab (even by position) — skip rather than fail
       segments.push(...extractFromSheet(ws, mapping));
     }
     return segments;
+  }
+
+  private resolveSheet(
+    wb: ExcelJSNS.Workbook,
+    mapping: SheetMapping,
+    referenceWb?: ExcelJSNS.Workbook
+  ): ExcelJSNS.Worksheet | undefined {
+    const exact = wb.getWorksheet(mapping.sheetName);
+    if (exact) return exact;
+    if (!referenceWb) return undefined;
+    const refIndex = referenceWb.worksheets.findIndex((w) => w.name === mapping.sheetName);
+    if (refIndex === -1) return undefined;
+    return wb.worksheets[refIndex];
   }
 
   applyTranslations(wb: ExcelJSNS.Workbook, updates: SegmentUpdate[]): void {
@@ -106,11 +125,16 @@ function extractFromSheet(ws: ExcelJSNS.Worksheet, mapping: SheetMapping): Segme
 
 function cellText(value: unknown): string {
   if (value == null) return "";
-  if (typeof value === "object" && "text" in (value as Record<string, unknown>)) {
-    return String((value as Record<string, unknown>).text ?? "");
-  }
-  if (typeof value === "object" && "result" in (value as Record<string, unknown>)) {
-    return String((value as Record<string, unknown>).result ?? "");
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    // Rich-text cells (mixed fonts/colors within one cell, common in free-form
+    // requirement docs) come back as { richText: [{text, font}, ...] } rather than a
+    // plain string — concatenate the runs to get the cell's actual visible text.
+    if (Array.isArray(obj.richText)) {
+      return obj.richText.map((run) => String((run as { text?: unknown }).text ?? "")).join("");
+    }
+    if ("text" in obj) return String(obj.text ?? "");
+    if ("result" in obj) return String(obj.result ?? "");
   }
   return String(value);
 }

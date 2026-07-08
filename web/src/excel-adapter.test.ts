@@ -158,6 +158,65 @@ test("multiple sheets with entirely different layouts are all extracted", async 
   assert.ok(segments.some((s) => s.locationId === "維護紀錄!B2" && s.zhText === "陳宜筠"));
 });
 
+test("a renamed sheet in the reference workbook is still found by tab position", async () => {
+  // Real customer files rename tabs between versions (e.g. dropping an English
+  // suffix) while keeping the same left-to-right order — extractSegments must not
+  // silently lose that whole sheet's diff just because the name changed.
+  const newWb = new ExcelJS.Workbook();
+  newWb.addWorksheet("其他頁籤"); // position 0, irrelevant filler tab
+  const newTargetWs = newWb.addWorksheet("需求列表"); // position 1 — new, shorter name
+  newTargetWs.getCell("A1").value = "編號";
+  newTargetWs.getCell("C1").value = "需求說明";
+  newTargetWs.getCell("D1").value = "English";
+  newTargetWs.getCell("A2").value = 1;
+  newTargetWs.getCell("C2").value = "第一項需求（已修改）";
+  const newBytes = toArrayBuffer(await newWb.xlsx.writeBuffer());
+
+  const oldWb = new ExcelJS.Workbook();
+  oldWb.addWorksheet("其他頁籤Other"); // position 0, also renamed, irrelevant
+  const oldTargetWs = oldWb.addWorksheet("需求列表RequirementList"); // position 1 — old, longer name
+  oldTargetWs.getCell("A1").value = "編號";
+  oldTargetWs.getCell("C1").value = "需求說明";
+  oldTargetWs.getCell("D1").value = "English";
+  oldTargetWs.getCell("A2").value = 1;
+  oldTargetWs.getCell("C2").value = "第一項需求";
+  const oldBytes = toArrayBuffer(await oldWb.xlsx.writeBuffer());
+
+  const sheetMappings: Record<string, SheetMapping> = {
+    需求列表: { sheetName: "需求列表", headerRow: 1, keyColumns: ["A"], zhColumns: ["C"], enColumns: ["D"] },
+  };
+  const adapter = new ExcelAdapter(ExcelJS, sheetMappings);
+
+  const newWbLoaded = await adapter.load(newBytes);
+  const oldWbLoaded = await adapter.load(oldBytes);
+
+  // Without a reference workbook, the renamed old sheet can't be found at all.
+  assert.equal(adapter.extractSegments(oldWbLoaded).length, 0);
+
+  // With the new workbook as a position reference, it resolves via tab order instead.
+  const oldSegments = adapter.extractSegments(oldWbLoaded, newWbLoaded);
+  assert.equal(oldSegments.length, 1);
+  assert.equal(oldSegments[0].zhText, "第一項需求");
+  assert.equal(oldSegments[0].locationId, "需求列表RequirementList!C2"); // uses the sheet's real (old) name
+});
+
+test("rich-text cells (mixed fonts within one cell) are read as their concatenated text", async () => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Sheet1");
+  ws.getCell("A1").value = "編號";
+  ws.getCell("C1").value = "需求說明";
+  ws.getCell("D1").value = "English";
+  ws.getCell("A2").value = 1;
+  ws.getCell("C2").value = {
+    richText: [{ text: "第一段" }, { font: { bold: true }, text: "→第二段" }],
+  };
+  const bytes = toArrayBuffer(await wb.xlsx.writeBuffer());
+
+  const adapter = new ExcelAdapter(ExcelJS, mapping());
+  const segments = adapter.extractSegments(await adapter.load(bytes));
+  assert.equal(segments[0].zhText, "第一段→第二段");
+});
+
 test("a configured sheet that doesn't exist in this workbook is skipped, not an error", async () => {
   const bytes = await buildWorkbook();
   const sheetMappings: Record<string, SheetMapping> = {

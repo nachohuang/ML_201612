@@ -100,6 +100,9 @@ async function dropFileOnZone(page, zoneSelector, inputId, filePath, mimeType) {
 
 async function setSheetCardRoles(page, sheetName, roles) {
   const card = page.locator(`.sheet-mapping-card[data-sheet-name="${sheetName}"]`);
+  // Sheets default to collapsed/unchecked (real documents can have 20+ tabs, most of
+  // which aren't translatable tables) — must opt in before the column selects show.
+  await card.locator(".sheet-enable").check();
   for (const [col, role] of Object.entries(roles)) {
     await card.locator(`select[data-col="${col}"]`).selectOption(role);
   }
