@@ -3,8 +3,9 @@ import { test } from "node:test";
 
 import ExcelJS from "exceljs";
 
-import { DEFAULT_SETTINGS } from "./config.ts";
-import { listEntries, readRow, upsertRow } from "./tracking-sheet.ts";
+import { DEFAULT_SETTINGS, TRACKING_FIELD_LABELS } from "./config.ts";
+import { buildTrackingWorkbook, listAllRows, listEntries, readRow, upsertRow } from "./tracking-sheet.ts";
+import type { TrackingRow } from "./tracking-sheet.ts";
 import { toArrayBuffer } from "./xlsx-buffer.ts";
 
 const MAPPING = DEFAULT_SETTINGS.trackingSheetMapping;
@@ -68,6 +69,40 @@ test("sequential appends each copy style from their own preceding row", async ()
   assert.equal(ws.getCell("A4").font?.italic, true);
 });
 
+test("upsert keeps two different documents' 'version 1' rows separate when sourceFileName is given", async () => {
+  const wb = new ExcelJS.Workbook();
+  wb.addWorksheet(MAPPING.sheetName);
+  for (const [field, col] of Object.entries(MAPPING.columns)) {
+    wb.getWorksheet(MAPPING.sheetName)!.getCell(`${col}1`).value = field;
+  }
+  const empty = toArrayBuffer(await wb.xlsx.writeBuffer());
+
+  // A batch of two unrelated documents both resolve independently to "version 1"
+  // against the same (empty) tracking sheet — without matching on sourceFileName too,
+  // the second upsert would silently overwrite the first document's row.
+  const afterFirst = await upsertRow(ExcelJS, empty, MAPPING, 1, { versionNo: 1, sourceFileName: "spec.xlsx" });
+  const afterSecond = await upsertRow(ExcelJS, afterFirst, MAPPING, 1, { versionNo: 1, sourceFileName: "notes.docx" });
+
+  const rows = await listAllRows(ExcelJS, afterSecond, MAPPING);
+  assert.deepEqual(
+    rows.map((r) => r.sourceFileName),
+    ["spec.xlsx", "notes.docx"]
+  );
+});
+
+test("upsert for the same document+version updates in place instead of duplicating", async () => {
+  const original = await buildTrackingSheet(); // version 1, sourceFileName G6-需求文件0707.xlsx
+  const updated = await upsertRow(ExcelJS, original, MAPPING, 1, {
+    versionNo: 1,
+    sourceFileName: "G6-需求文件0707.xlsx",
+    status: "已完成",
+  });
+
+  const rows = await listAllRows(ExcelJS, updated, MAPPING);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "已完成");
+});
+
 test("read row returns null when version missing", async () => {
   const original = await buildTrackingSheet();
   const row = await readRow(ExcelJS, original, MAPPING, 99);
@@ -103,3 +138,77 @@ test("listEntries returns an empty list when the tracking sheet has no data rows
   const entries = await listEntries(ExcelJS, bytes, MAPPING);
   assert.deepEqual(entries, []);
 });
+
+test("listAllRows reads every column of every data row for the tracking-management tab", async () => {
+  const original = await buildTrackingSheet();
+  const withV2 = await upsertRow(ExcelJS, original, MAPPING, 2, {
+    versionNo: 2,
+    sourceFileName: "G6-需求文件0714.xlsx",
+    status: "已完成",
+  });
+
+  const rows = await listAllRows(ExcelJS, withV2, MAPPING);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].versionNo, "1");
+  assert.equal(rows[0].updateSummary, "首次提供文件");
+  assert.equal(rows[1].versionNo, "2");
+  assert.equal(rows[1].sourceFileName, "G6-需求文件0714.xlsx");
+  assert.equal(rows[1].status, "已完成");
+});
+
+test("listAllRows returns an empty list for a tracking sheet with no data rows", async () => {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(MAPPING.sheetName);
+  for (const col of Object.values(MAPPING.columns)) ws.getCell(`${col}1`).value = "header";
+  const bytes = toArrayBuffer(await wb.xlsx.writeBuffer());
+
+  assert.deepEqual(await listAllRows(ExcelJS, bytes, MAPPING), []);
+});
+
+test("buildTrackingWorkbook creates a brand-new sheet with header labels when there's no existing file", async () => {
+  const row: TrackingRow = { ...blankRow(), versionNo: "1", sourceFileName: "需求文件.docx", status: "待確認" };
+  const bytes = await buildTrackingWorkbook(ExcelJS, MAPPING, [row]);
+
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(bytes);
+  const ws = wb.getWorksheet(MAPPING.sheetName)!;
+  assert.equal(ws.getCell(`${MAPPING.columns.versionNo}1`).value, TRACKING_FIELD_LABELS.versionNo);
+  assert.equal(ws.getCell(`${MAPPING.columns.versionNo}2`).value, "1");
+  assert.equal(ws.getCell(`${MAPPING.columns.sourceFileName}2`).value, "需求文件.docx");
+  assert.equal(ws.getCell(`${MAPPING.columns.status}2`).value, "待確認");
+});
+
+test("buildTrackingWorkbook rewrites an existing sheet's data rows wholesale (on-screen edits are what gets saved)", async () => {
+  const original = await buildTrackingSheet(); // one data row: version 1
+  const editedRows: TrackingRow[] = [
+    { ...blankRow(), versionNo: "1", sourceFileName: "改過的檔名.xlsx", status: "已完成" },
+    { ...blankRow(), versionNo: "2", sourceFileName: "第二版.xlsx", status: "待確認" },
+  ];
+
+  const bytes = await buildTrackingWorkbook(ExcelJS, MAPPING, editedRows, original);
+  const rows = await listAllRows(ExcelJS, bytes, MAPPING);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].sourceFileName, "改過的檔名.xlsx");
+  assert.equal(rows[0].status, "已完成");
+  assert.equal(rows[1].sourceFileName, "第二版.xlsx");
+});
+
+test("buildTrackingWorkbook clears stale trailing rows when the edited table has fewer rows than before", async () => {
+  const original = await buildTrackingSheet();
+  const withV2 = await upsertRow(ExcelJS, original, MAPPING, 2, { versionNo: 2, sourceFileName: "v2.xlsx" });
+
+  const editedRows: TrackingRow[] = [{ ...blankRow(), versionNo: "1", sourceFileName: "only-one-left.xlsx" }];
+  const bytes = await buildTrackingWorkbook(ExcelJS, MAPPING, editedRows, withV2);
+
+  const rows = await listAllRows(ExcelJS, bytes, MAPPING);
+  assert.deepEqual(
+    rows.map((r) => r.sourceFileName),
+    ["only-one-left.xlsx"]
+  );
+});
+
+function blankRow(): TrackingRow {
+  const row = {} as TrackingRow;
+  for (const field of Object.keys(TRACKING_FIELD_LABELS) as Array<keyof typeof TRACKING_FIELD_LABELS>) row[field] = "";
+  return row;
+}

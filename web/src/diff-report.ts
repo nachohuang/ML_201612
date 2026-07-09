@@ -24,3 +24,32 @@ export async function buildDiffReportWorkbook(
 
   return toArrayBuffer(await wb.xlsx.writeBuffer());
 }
+
+/** One combined report row across a whole batch of documents — unlike ChangeRecord,
+ * this also carries which document it came from plus the user's on-screen note and
+ * translation, since a batch run produces one merged report rather than one per file. */
+export interface ReportRow {
+  docName: string;
+  locationId: string;
+  fieldName: string | null;
+  oldZh?: string;
+  newZh?: string;
+  changeType: ChangeType;
+  note: string;
+  translation: string;
+}
+
+const COMBINED_HEADERS = ["文件名稱", "位置", "欄位名稱", "舊內容", "新內容", "變動類型", "備註", "翻譯"];
+
+export async function buildCombinedReportWorkbook(ExcelJS: typeof ExcelJSNS, rows: ReportRow[]): Promise<ArrayBuffer> {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("差異報告");
+  ws.addRow(COMBINED_HEADERS);
+
+  for (const row of rows) {
+    if (row.changeType === ChangeType.UNCHANGED) continue;
+    ws.addRow([row.docName, row.locationId, row.fieldName ?? "", row.oldZh ?? "", row.newZh ?? "", row.changeType, row.note, row.translation]);
+  }
+
+  return toArrayBuffer(await wb.xlsx.writeBuffer());
+}

@@ -66,6 +66,26 @@ export interface Settings {
   wordMapping: WordMapping;
 }
 
+export const TRACKING_FIELD_LABELS: Record<keyof TrackingColumns, string> = {
+  versionNo: "版本編號",
+  receivedDate: "收到日期",
+  sender: "寄件窗口",
+  sourceFileName: "客戶原始檔名",
+  emailPath: "信件檔名",
+  bilingualFilePath: "雙語檔檔名",
+  diffReportPath: "差異報告檔名",
+  updateSummary: "更新摘要",
+  isFirstVersion: "是否首次文件",
+  overseasConfirmStatus: "海外確認狀態",
+  overseasConfirmDate: "海外確認日期",
+  overseasConfirmMethod: "海外確認方式",
+  customerConfirmStatus: "客戶確認狀態",
+  customerConfirmDate: "客戶確認日期",
+  customerConfirmMethod: "客戶確認方式",
+  status: "狀態",
+  notes: "備註",
+};
+
 export const DEFAULT_SETTINGS: Settings = {
   sheetMappings: {},
   wordMapping: {
